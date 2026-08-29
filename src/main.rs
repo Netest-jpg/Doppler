@@ -12,6 +12,10 @@ struct Object {
 
     speed: f32,
 
+    // 0.0 -> Point A
+    // 1.0 -> Point B
+    progress: f32,
+
     moving: bool,
     finished: bool,
 
@@ -44,6 +48,8 @@ impl eframe::App for Object {
             y: rect.center().y,
         };
 
+        let pixels_per_meter = (point_b.x - point_a.x) / DISTANCE;
+
         if !self.moving && !self.finished {
             self.x = point_a.x;
             self.y = point_a.y;
@@ -52,11 +58,7 @@ impl eframe::App for Object {
         if self.moving {
             let total_time = DISTANCE / self.speed;
             let elapsed = self.start_time.elapsed().as_secs_f32();
-            let progress = (elapsed / total_time).clamp(0.0, 1.0);
-
-            //self.x = point_a.x + (pixel distance between point A and point B) * progress
-            self.x = point_a.x + (point_b.x - point_a.x) * progress;
-            self.y = point_a.y + (point_b.y - point_a.y) * progress;
+            self.progress = (elapsed / total_time).clamp(0.0, 1.0);
 
             // rate at which waves should be generated each second.
             let wave_time_period = 1.0 / FREQUENCY;
@@ -68,8 +70,8 @@ impl eframe::App for Object {
             };
             if should_generate_wave {
                 let now = Instant::now();
-                let pixels_per_meter = (point_b.x - point_a.x) / DISTANCE;
-                let distance_from_a = (self.x - point_a.x) / pixels_per_meter;
+                // convert Object's progress into meters
+                let distance_from_a = self.progress * DISTANCE;
                 self.waves.push(Waves {
                     distance_from_a,
                     emission_time: now,
@@ -77,22 +79,30 @@ impl eframe::App for Object {
                 self.last_wave_time = Some(now);
             }
 
-            if progress >= 1.0 {
+            // Upon reaching Point B
+            if self.progress >= 1.0 {
+                self.progress = 1.0;
+
                 self.moving = false;
                 self.finished = true;
-
-                self.x = point_b.x;
-                self.y = point_b.y;
 
                 self.waves.clear();
             }
             ui.ctx().request_repaint();
         }
 
-        let pixels_per_meter = (point_b.x - point_a.x) / DISTANCE;
+        self.x = point_a.x + (point_b.x - point_a.x) * self.progress;
+
+        self.y = point_a.y + (point_b.y - point_a.y) * self.progress;
+
+        // Drawing Point A
         ui.painter()
             .circle_filled(point_a, 5.0, egui::Color32::GREEN);
+
+        // Drawing Point B
         ui.painter().circle_filled(point_b, 5.0, egui::Color32::RED);
+
+        // Drawing Object
         ui.painter().circle_filled(
             egui::Pos2 {
                 x: self.x,
@@ -102,7 +112,7 @@ impl eframe::App for Object {
             egui::Color32::WHITE,
         );
 
-        // drawing waves
+        // Drawing waves
         for wave in &self.waves {
             // time since the wave was first emitted
             let elapsed_time = wave.emission_time.elapsed().as_secs_f32();
@@ -131,23 +141,25 @@ impl eframe::App for Object {
         ui.label(format!("Frequency: {:.2} Hz", FREQUENCY));
         ui.label(format!("Time period: {:.2} s", 1.0 / FREQUENCY));
         ui.label(format!("Number of waves generated: {}", self.waves.len()));
+        ui.label(format!("Progress: {:.2}%", self.progress * 100.0));
 
+        // Buttons
         ui.horizontal(|ui| {
             if ui.button("Start").clicked() {
                 self.start_time = Instant::now();
                 self.last_wave_time = None;
                 self.waves.clear();
 
+                self.progress = 0.0;
+
                 self.moving = true;
                 self.finished = false;
 
-                self.x = point_a.x;
-                self.y = point_a.y;
+                ui.ctx().request_repaint();
             }
 
             if ui.button("Reset").clicked() {
-                self.x = point_a.x;
-                self.y = point_a.y;
+                self.progress = 0.0;
 
                 self.moving = false;
                 self.finished = false;
@@ -169,11 +181,18 @@ fn main() -> eframe::Result {
             Ok(Box::new(Object {
                 x: 0.0,
                 y: 0.0,
+
                 speed: 100.0,
+
+                progress: 0.0,
+
                 moving: false,
                 finished: false,
+
                 start_time: Instant::now(),
+
                 last_wave_time: None,
+
                 waves: Vec::new(),
             }))
         }),
