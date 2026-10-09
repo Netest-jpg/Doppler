@@ -1,31 +1,59 @@
 use eframe::egui;
 use std::time::Instant;
 
-// Constants
-const DISTANCE: f32 = 500.0; // TODO: Cap this value from 50m to 5000m
-const SOUND_SPEED: f32 = 331.5;
-const FREQUENCY: f32 = 20.0;
+#[derive(PartialEq)]
+enum Direction {
+    LeftToRight,
+    RightToLeft,
+}
+
+struct Waves {
+    distance_from_a_meters: f32,
+    emission_time: Instant,
+}
+
+struct Settings {
+    distance: f32,
+    wave_speed: f32,
+    frequency: f32,
+    direction: Direction,
+    object_speed: f32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            distance: 2500.0,
+            wave_speed: 331.5,
+            frequency: 20.0,
+            direction: Direction::LeftToRight,
+            object_speed: 50.0,
+        }
+    }
+}
 
 struct Object {
-    x: f32,
-    y: f32,
-
-    speed: f32,
-
-    /// 0.0 -> Point A\
-    /// 1.0 -> Point B
     progress: f32,
-
     moving: bool,
     finished: bool,
-
     start_time: Instant,
-
-    /// the time at which the last wave was generated
     last_wave_time: Option<Instant>,
-
     waves: Vec<Waves>,
 }
+
+impl Default for Object {
+    fn default() -> Self {
+        Object {
+            progress: 0.0,
+            moving: false,
+            finished: false,
+            start_time: Instant::now(),
+            last_wave_time: None,
+            waves: Vec::new(),
+        }
+    }
+}
+
 impl Object {
     /// resets the state by moving [`Object`] back to Point A
     #[inline(always)]
@@ -56,161 +84,206 @@ impl Object {
         self.finished = true;
         self.waves.clear();
     }
+
+    #[inline(always)]
+    fn update(&mut self, settings: &Settings) {
+        let total_time = settings.distance / settings.object_speed;
+        let elapsed = self.start_time.elapsed().as_secs_f32();
+        self.progress = (elapsed / total_time).clamp(0.0, 1.0);
+        let wave_time_period = 1.0 / settings.frequency;
+        let should_generate_wave = match self.last_wave_time {
+            None => true,
+            Some(last_wave_time) => last_wave_time.elapsed().as_secs_f32() >= wave_time_period,
+        };
+        if should_generate_wave {
+            let now = Instant::now();
+            let traveled = self.progress * settings.distance;
+            let distance_from_a_meters = match settings.direction {
+                Direction::LeftToRight => traveled,
+                Direction::RightToLeft => settings.distance - traveled,
+            };
+            self.waves.push(Waves {
+                distance_from_a_meters,
+                emission_time: now,
+            });
+            self.last_wave_time = Some(now);
+        }
+        if self.progress >= 1.0 {
+            self.finished();
+        }
+    }
 }
 
-struct Waves {
-    // Position of wave in meters from Point A
-    distance_from_a: f32,
-    // time the wave was generated
-    emission_time: Instant,
+#[derive(Default)]
+struct App {
+    settings: Settings,
+    object: Object,
 }
 
-impl eframe::App for Object {
+impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let rect = ui.available_rect_before_wrap();
-
-        // Position of Point A
-        let point_a = egui::Pos2 {
+        let a = egui::Pos2 {
             x: rect.left() + 100.0,
             y: rect.center().y,
         };
-
-        // Position of Point B
-        let point_b = egui::Pos2 {
+        let b = egui::Pos2 {
             x: rect.right() - 100.0,
             y: rect.center().y,
         };
 
-        if self.moving {
-            let total_time = DISTANCE / self.speed;
-            let elapsed = self.start_time.elapsed().as_secs_f32();
-            self.progress = (elapsed / total_time).clamp(0.0, 1.0);
+        let (start, end) = match self.settings.direction {
+            Direction::LeftToRight => (a, b),
+            Direction::RightToLeft => (b, a),
+        };
 
-            // rate at which waves should be generated each second.
-            let wave_time_period = 1.0 / FREQUENCY;
-
-            // Check if enough time has elapsed to emit the next wave
-            let should_generate_wave = match self.last_wave_time {
-                None => true,
-                Some(last_wave_time) => last_wave_time.elapsed().as_secs_f32() >= wave_time_period,
-            };
-            if should_generate_wave {
-                let now = Instant::now();
-                // convert Object's progress into meters
-                let distance_from_a = self.progress * DISTANCE;
-                self.waves.push(Waves {
-                    distance_from_a,
-                    emission_time: now,
-                });
-                self.last_wave_time = Some(now);
-            }
-
-            // Upon reaching Point B
-            if self.progress >= 1.0 {
-                self.finished();
-            }
-
+        if self.object.moving {
+            self.object.update(&self.settings);
             ui.ctx().request_repaint();
         }
 
-        // Calculate Object's position
-        self.x = point_a.x + (point_b.x - point_a.x) * self.progress;
-        self.y = point_a.y + (point_b.y - point_a.y) * self.progress;
+        let object_position = egui::Pos2 {
+            x: start.x + (end.x - start.x) * self.object.progress,
+            y: start.y + (end.y - start.y) * self.object.progress,
+        };
 
-        // Drawing Point A
-        ui.painter()
-            .circle_filled(point_a, 5.0, egui::Color32::LIGHT_GREEN);
+        match self.settings.direction {
+            Direction::LeftToRight => {
+                ui.painter()
+                    .circle_filled(a, 5.0, egui::Color32::LIGHT_GREEN);
+                ui.painter().circle_filled(b, 5.0, egui::Color32::RED);
+            }
+            Direction::RightToLeft => {
+                ui.painter().circle_filled(a, 5.0, egui::Color32::RED);
+                ui.painter()
+                    .circle_filled(b, 5.0, egui::Color32::LIGHT_GREEN);
+            }
+        };
 
-        // Drawing Point B
-        ui.painter().circle_filled(point_b, 5.0, egui::Color32::RED);
-
-        // Drawing Object
         ui.painter().circle_filled(
             egui::Pos2 {
-                x: self.x,
-                y: self.y,
+                x: object_position.x,
+                y: object_position.y,
             },
             25.0,
             egui::Color32::WHITE,
         );
 
-        let pixels_per_meter = (point_b.x - point_a.x) / DISTANCE;
-        // Drawing waves
-        // HOT LOOP--------------------------------
+        let pixels_per_meter = (b.x - a.x).abs() / self.settings.distance;
         // TODO: Maybe apply SIMD? <- First priority
         // TODO: Maybe Parallelize the workload? <- Maybe later
-        for wave in &self.waves {
-            // time since the wave was first emitted
+        for wave in &self.object.waves {
             let elapsed_time = wave.emission_time.elapsed().as_secs_f32();
-            let wave_x = point_a.x + wave.distance_from_a * pixels_per_meter;
-
-            // radius in meters = Sound_speed * time_since_emission
-            let radius_meters = SOUND_SPEED * elapsed_time;
-
-            // radius in pixels = radius_in_meters * number_of_pixels_per_meter
+            let wave_x = a.x + wave.distance_from_a_meters * pixels_per_meter;
+            let radius_meters = self.settings.wave_speed * elapsed_time;
             let radius_pixels = radius_meters * pixels_per_meter;
 
             ui.painter().circle_stroke(
-                egui::Pos2 {
-                    x: wave_x,
-                    y: point_a.y,
-                },
+                egui::Pos2 { x: wave_x, y: a.y },
                 radius_pixels,
                 egui::Stroke::new(1.0, egui::Color32::from_gray(100)),
             );
         }
-        //-----------------------------------------
 
-        // Logs
         ui.label(format!(
-            "Object position x: {:.2}, y: {:.2}",
-            self.x, self.y
+            "Object's position x: {:.2}, y: {:.2}",
+            object_position.x, object_position.y
         ));
-        ui.label(format!("Distance: {:.2} m", DISTANCE));
-        ui.label(format!("Frequency: {:.2} Hz", FREQUENCY));
-        ui.label(format!("Time period: {:.4} s", 1.0 / FREQUENCY));
-        ui.label(format!("Number of waves generated: {}", self.waves.len()));
+        ui.label(format!(
+            "Time period: {:.4} s",
+            1.0 / self.settings.frequency
+        ));
+
+        ui.label(format!(
+            "Number of waves generated: {}",
+            self.object.waves.len()
+        ));
+
         ui.horizontal(|ui| {
-            ui.label(format!("Speed: {:.2} m/s", self.speed));
-            let slider = ui.add(egui::Slider::new(&mut self.speed, 0.0..=1715.0));
-            if slider.changed() {
-                self.reset();
+            ui.label("Direction:");
+            let mut changed = false;
+            changed |= ui
+                .selectable_value(
+                    &mut self.settings.direction,
+                    Direction::LeftToRight,
+                    "Left -> Right",
+                )
+                .changed();
+            changed |= ui
+                .selectable_value(
+                    &mut self.settings.direction,
+                    Direction::RightToLeft,
+                    "Right -> Left",
+                )
+                .changed();
+            if changed {
+                self.object.reset();
             }
         });
-        ui.label(format!("Progress: {:.2}%", self.progress * 100.0));
 
-        // Buttons
+        ui.horizontal(|ui| {
+            ui.label(format!("Distance: {:.2} m", self.settings.distance));
+            let slider = ui.add(egui::Slider::new(
+                &mut self.settings.distance,
+                500.0..=5000.0,
+            ));
+            if slider.changed() {
+                self.object.reset();
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label(format!("Frequency: {:.2} Hz", self.settings.frequency));
+            let slider = ui.add(egui::Slider::new(
+                &mut self.settings.frequency,
+                1.0..=1000.0,
+            ));
+            if slider.changed() {
+                self.object.reset();
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label(format!(
+                "Object speed: {:.2} m/s",
+                self.settings.object_speed
+            ));
+            let slider = ui.add(egui::Slider::new(
+                &mut self.settings.object_speed,
+                1.0..=1715.0,
+            ));
+            if slider.changed() {
+                self.object.reset();
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label(format!("Wave speed: {:.2} m/s", self.settings.wave_speed));
+            let slider = ui.add(egui::Slider::new(
+                &mut self.settings.wave_speed,
+                1.0..=1715.0,
+            ));
+            if slider.changed() {
+                self.object.reset();
+            }
+        });
+
         ui.horizontal(|ui| {
             if ui.button("Start").clicked() {
-                self.start();
+                self.object.start();
                 ui.ctx().request_repaint();
             }
-
             if ui.button("Reset").clicked() {
-                self.reset();
+                self.object.reset();
             }
         });
     }
 }
 
 fn main() -> eframe::Result {
-    let native_options = eframe::NativeOptions::default();
-
     eframe::run_native(
         "Doppler Effect",
-        native_options,
-        Box::new(|_| {
-            Ok(Box::new(Object {
-                x: 0.0,
-                y: 0.0,
-                speed: 50.0,
-                progress: 0.0,
-                moving: false,
-                finished: false,
-                start_time: Instant::now(),
-                last_wave_time: None,
-                waves: Vec::new(),
-            }))
-        }),
+        eframe::NativeOptions::default(),
+        Box::new(|_| Ok(Box::new(App::default()))),
     )
 }
