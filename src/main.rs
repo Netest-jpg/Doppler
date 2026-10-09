@@ -7,17 +7,14 @@ enum Direction {
     RightToLeft,
 }
 
-struct Waves {
-    distance_from_a_meters: f32,
-    emission_time: Instant,
-}
-
 struct Settings {
     distance: f32,
     wave_speed: f32,
     frequency: f32,
-    direction: Direction,
+    wave_intensity: f32,
+    wave_decay: f32,
     object_speed: f32,
+    direction: Direction,
 }
 
 impl Default for Settings {
@@ -26,10 +23,17 @@ impl Default for Settings {
             distance: 2500.0,
             wave_speed: 331.5,
             frequency: 20.0,
-            direction: Direction::LeftToRight,
+            wave_intensity: 1.0,
+            wave_decay: 3.0,
             object_speed: 50.0,
+            direction: Direction::LeftToRight,
         }
     }
+}
+
+struct Waves {
+    distance_from_a_meters: f32,
+    emission_time: Instant,
 }
 
 struct Object {
@@ -39,6 +43,7 @@ struct Object {
     start_time: Instant,
     last_wave_time: Option<Instant>,
     waves: Vec<Waves>,
+    total_emitted: u64,
 }
 
 impl Default for Object {
@@ -50,6 +55,7 @@ impl Default for Object {
             start_time: Instant::now(),
             last_wave_time: None,
             waves: Vec::new(),
+            total_emitted: 0,
         }
     }
 }
@@ -63,6 +69,7 @@ impl Object {
         self.finished = false;
         self.last_wave_time = None;
         self.waves.clear();
+        self.total_emitted = 0;
     }
 
     /// sets the state for starting the animation
@@ -74,6 +81,7 @@ impl Object {
         self.progress = 0.0;
         self.moving = true;
         self.finished = false;
+        self.total_emitted = 0;
     }
 
     /// sets the state where Object has finished it's animation
@@ -82,7 +90,6 @@ impl Object {
         self.progress = 1.0;
         self.moving = false;
         self.finished = true;
-        self.waves.clear();
     }
 
     #[inline(always)]
@@ -107,10 +114,18 @@ impl Object {
                 emission_time: now,
             });
             self.last_wave_time = Some(now);
+            self.total_emitted += 1;
         }
         if self.progress >= 1.0 {
             self.finished();
         }
+    }
+
+    #[inline(always)]
+    fn prune_waves(&mut self, settings: &Settings) {
+        let cutoff = settings.wave_decay * 5.0;
+        self.waves
+            .retain(|w| w.emission_time.elapsed().as_secs_f32() < cutoff);
     }
 }
 
@@ -139,6 +154,9 @@ impl eframe::App for App {
 
         if self.object.moving {
             self.object.update(&self.settings);
+        }
+        self.object.prune_waves(&self.settings);
+        if self.object.moving || !self.object.waves.is_empty() {
             ui.ctx().request_repaint();
         }
 
@@ -170,18 +188,18 @@ impl eframe::App for App {
         );
 
         let pixels_per_meter = (b.x - a.x).abs() / self.settings.distance;
-        // TODO: Maybe apply SIMD? <- First priority
-        // TODO: Maybe Parallelize the workload? <- Maybe later
         for wave in &self.object.waves {
             let elapsed_time = wave.emission_time.elapsed().as_secs_f32();
+            let fade = (-elapsed_time / self.settings.wave_decay).exp();
+            let alpha = (self.settings.wave_intensity * fade * 255.0) as u8;
+
             let wave_x = a.x + wave.distance_from_a_meters * pixels_per_meter;
-            let radius_meters = self.settings.wave_speed * elapsed_time;
-            let radius_pixels = radius_meters * pixels_per_meter;
+            let radius_pixels = self.settings.wave_speed * elapsed_time * pixels_per_meter;
 
             ui.painter().circle_stroke(
                 egui::Pos2 { x: wave_x, y: a.y },
                 radius_pixels,
-                egui::Stroke::new(1.0, egui::Color32::from_gray(100)),
+                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(alpha)),
             );
         }
 
@@ -194,10 +212,8 @@ impl eframe::App for App {
             1.0 / self.settings.frequency
         ));
 
-        ui.label(format!(
-            "Number of waves generated: {}",
-            self.object.waves.len()
-        ));
+        ui.label(format!("Waves generated: {}", self.object.total_emitted));
+        ui.label(format!("Waves alive: {}", self.object.waves.len()));
 
         ui.horizontal(|ui| {
             ui.label("Direction:");
@@ -266,6 +282,22 @@ impl eframe::App for App {
             if slider.changed() {
                 self.object.reset();
             }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label(format!(
+                "Wave intensity: {:.2}",
+                self.settings.wave_intensity
+            ));
+            ui.add(egui::Slider::new(
+                &mut self.settings.wave_intensity,
+                0.05..=1.0,
+            ));
+        });
+
+        ui.horizontal(|ui| {
+            ui.label(format!("Wave decay: {:.2} s", self.settings.wave_decay));
+            ui.add(egui::Slider::new(&mut self.settings.wave_decay, 0.2..=10.0));
         });
 
         ui.horizontal(|ui| {
